@@ -32,6 +32,7 @@ import (
 	"github.com/containerd/typeurl"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/strslice"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -81,7 +82,7 @@ func (c *RunConfig) getContextWithTimeout() (context.Context, context.CancelFunc
 type ContainerRuntime interface {
 	PullImage(ctx context.Context, image string,
 		skipTLS bool, authStr string,
-		stdout io.WriteCloser) error
+		stdout io.WriteCloser, pullAlways bool) error
 	ContainerInfo(ctx context.Context, cfg RunConfig) (ContainerInfo, error)
 	RunDebugContainer(cfg RunConfig) error
 }
@@ -94,15 +95,27 @@ var DockerContainerRuntimeImplementsContainerRuntime ContainerRuntime = (*Docker
 
 func (c *DockerContainerRuntime) PullImage(ctx context.Context,
 	image string, skipTLS bool, authStr string,
-	stdout io.WriteCloser) error {
-	authBytes := base64.URLEncoding.EncodeToString([]byte(authStr))
-	out, err := c.client.ImagePull(ctx, image, types.ImagePullOptions{RegistryAuth: string(authBytes)})
-	if err != nil {
-		return err
+	stdout io.WriteCloser, pullAlways bool) error {
+	skipPull := false
+	if !pullAlways {
+		images, err := c.client.ImageList(ctx, types.ImageListOptions{Filters: filters.NewArgs(filters.KeyValuePair{"reference", image})})
+		if err != nil {
+			return err
+		}
+		if len(images) > 0 {
+			skipPull = true
+		}
 	}
-	defer out.Close()
-	// write pull progress to user
-	term.DisplayJSONMessagesStream(out, stdout, 1, true, nil)
+	if !skipPull {
+		authBytes := base64.URLEncoding.EncodeToString([]byte(authStr))
+		out, err := c.client.ImagePull(ctx, image, types.ImagePullOptions{RegistryAuth: string(authBytes)})
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		// write pull progress to user
+		term.DisplayJSONMessagesStream(out, stdout, 1, true, nil)
+	}
 	return nil
 }
 
@@ -502,7 +515,7 @@ outer:
 func (c *ContainerdContainerRuntime) PullImage(
 	ctx context.Context, image string, skipTLS bool,
 	authStr string,
-	stdout io.WriteCloser) error {
+	stdout io.WriteCloser, pullAlways bool) error {
 
 	ctx = namespaces.WithNamespace(ctx, KubectlDebugNS)
 
@@ -909,7 +922,7 @@ func (m *DebugAttacher) DebugContainer(cfg RunConfig) error {
 		ioForPull = nil
 	}
 	err := m.containerRuntime.PullImage(m.context, m.image,
-		m.registrySkipTLS, m.authStr, ioForPull)
+		m.registrySkipTLS, m.authStr, ioForPull, false)
 	if err != nil {
 		return err
 	}
