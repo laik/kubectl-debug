@@ -1,0 +1,37 @@
+# Build the manager binary
+FROM golang:1.14 as builder
+
+WORKDIR /workspace
+# Copy the Go Modules manifests
+ENV GO111MODULE=on
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,https://mirrors.aliyun.com/goproxy/,https://athens.azurefd.net,direct
+
+COPY go.mod go.mod
+COPY go.sum go.sum  
+# cache deps before building and copying source so that we don't need to re-download as much
+# and so that source changes don't invalidate our downloaded layer
+RUN go mod download
+
+# Add the go source
+ADD . .
+
+# Build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o build/base cmd/base/*.go
+
+# Use distroless as minimal base image to package the manager binary
+# Refer to https://github.com/GoogleContainerTools/distroless for more details
+FROM alpine:3.11.5 as alpine-build
+RUN apk add lxcfs containerd
+
+FROM alpine:3.11.5
+COPY --from=alpine-build /usr/bin/lxcfs /usr/bin/lxcfs
+COPY --from=alpine-build /usr/lib/*fuse* /usr/lib/
+COPY --from=alpine-build /usr/bin/ctr /usr/bin/ctr
+
+COPY ./scripts/start.sh /
+RUN chmod 755 /start.sh
+COPY --from=builder debug-agent /bin/debug-agent
+
+EXPOSE 10027
+
+CMD ["/start.sh"]
